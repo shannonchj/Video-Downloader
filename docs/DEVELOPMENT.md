@@ -50,7 +50,8 @@
 uv sync                          # 建立 venv 並安裝鎖定版本
 uv run pytest -x -q              # 測試
 uv run ruff check --fix . && uv run ruff format .
-uv run mypy src/mediabot         # security/、downloader/ 為 --strict
+uv run python scripts/check_forbidden.py
+uv run mypy                      # 全專案 strict
 ```
 
 ---
@@ -96,7 +97,7 @@ uv run mypy src/mediabot         # security/、downloader/ 為 --strict
 | # | 檢查 | 指令 / 方式 | 範圍 |
 |---|---|---|---|
 | Q1 | 格式與 lint | `uv run ruff format --check . && uv run ruff check .` | 全部 |
-| Q2 | 型別 | `uv run mypy src/mediabot`；`security/`、`downloader/` 為 `strict` | 全部 |
+| Q2 | 型別 | `uv run mypy`（全專案 strict，範圍為 `src/`、`scripts/`；M0.5 決定） | 全部 |
 | Q3 | 單元測試 | `uv run pytest -x -q` | 全部 |
 | Q4 | 危險寫法掃描 | `uv run python scripts/check_forbidden.py`（取代 PLAN §11.3 的 `rg`，見 §5.2） | `src/` |
 | Q5 | 依賴漏洞 | `uv run pip-audit`（有改依賴的 PR 必跑；其餘每週一次） | 依賴 |

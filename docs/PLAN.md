@@ -3,7 +3,7 @@
 > 自架影片下載 → 字幕辨識 → 中文翻譯 → 燒錄輸出 的個人工具
 > 本文件供人類與 AI 協作者共同參考。**AI 協作者修改程式前請先閱讀第 2 節「安全守則」與第 12 節「AI 協作規範」。**
 
-- 文件版本：v0.1（2026-11-22）
+- 文件版本：v0.2（2026-11-22）
 - 主要語言：Python 3.12
 - 目標語種：菲律賓語（Tagalog / Taglish）、英文 → 台灣繁體中文
 
@@ -794,7 +794,7 @@ worker 每小時執行一次：刪除 `files.expires_at < now` 的檔案和紀�
 **`test_presets.py`**
 
 - 不存在的方案名稱必須丟出例外。
-- 所有方案的 opts 都不可包含 `exec`、`cookiesfrombrowser`、`external_downloader` 等禁止的鍵。
+- 所有方案的 opts 都不可包含 `exec`、`exec_cmd`、`cookiesfrombrowser`、`external_downloader` 等禁止的鍵，`postprocessors` 中也不可出現 `key` 為 `Exec` / `ExecAfterDownload` 的項目（`--exec` 在 Python API 中的形式）。
 
 **`test_signing.py`**
 
@@ -853,6 +853,7 @@ worker 每小時執行一次：刪除 `files.expires_at < now` 的檔案和紀�
 
 ### Phase 1：Mac mini 單機
 
+- [ ] **M0.5 專案骨架**：pyproject、工具鏈、`scripts/check_forbidden.py`、CI、AI 規則對齊（`docs/specs/2026-11-22-m0.5-project-skeleton.md`）
 - [ ] **M0 環境建置**
   - [ ] Mac mini：設定 pmset、防火牆，建立專用帳號 `mediabot`
   - [ ] 安裝 Homebrew 版的 python、ffmpeg、tailscale；所有裝置加入 tailnet；設定 ACL
@@ -898,3 +899,4 @@ worker 每小時執行一次：刪除 `files.expires_at < now` 的檔案和紀�
 | 日期 | 版本 | 內容 |
 |---|---|---|
 | 2026-11-22 | v0.1 | 初版：確定 Phase 1（Mac mini 不休眠）為主要方案，Phase 2（VPS 混合）為進階方案，Phase 3 預留字幕流水線 |
+| 2026-11-22 | v0.2 | 新增 `docs/DEVELOPMENT.md` 開發流程；§13 插入 M0.5；mypy 改為全專案 strict（原 §12-5 為至少 security/、downloader/）；§11.3 的 `rg` 掃描改由 `scripts/check_forbidden.py` 執行；ADR-0001（yt-dlp 經 lockfile 更新，取代 §10.1 的 `pip install -U`）、ADR-0002（SQLite 使用標準庫與 `PRAGMA user_version`） |
