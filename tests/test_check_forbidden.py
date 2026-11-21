@@ -78,6 +78,7 @@ def test_eval_and_exec_builtins_are_reported(source: str) -> None:
         "opts = {'exec_before_download': 'x'}",
         "opts = {'cookiesfrombrowser': ('chrome',)}",
         "opts = {'cookiefile': 'c.txt'}",
+        "opts = {'netrc_cmd': 'cat creds'}",
         "opts = {'external_downloader': 'aria2c'}",
         "opts = {'external_downloader_args': ['-x']}",
         "opts = dict(cookiesfrombrowser=('chrome',))",

@@ -40,9 +40,10 @@ FORBIDDEN_YTDLP_KEYS = {
     "cookiefile",
     "external_downloader",
     "external_downloader_args",
+    "netrc_cmd",
 }
-# yt-dlp's --exec maps to these postprocessor keys in the Python API.
-# TODO(M1): verify against yt_dlp/postprocessor/exec.py once yt-dlp is pinned.
+# yt-dlp's --exec maps to these postprocessor keys in the Python API
+# (checked against yt_dlp/postprocessor/exec.py, yt-dlp 2026.10.26).
 FORBIDDEN_POSTPROCESSORS = {"Exec", "ExecAfterDownload"}
 
 

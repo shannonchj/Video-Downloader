@@ -224,6 +224,8 @@ PLAN S13 要求鎖版，§10.1 卻在 Mac mini 上直接 `pip install -U yt-dlp`
 
 實作對應里程碑時一併修正 PLAN，並在 PLAN 變更紀錄記錄。
 
+P1–P6 已於 M1 修正（PLAN v0.3）；P7、P8 已於 M0.5 處理。
+
 | # | 位置 | 問題 | 建議 |
 |---|---|---|---|
 | P1 | §7.3 `validate_url` | `InvalidURL` 繼承 `ValueError`，在 `try` 內 `raise InvalidURL("ip_host")` 會被同一個 `except ValueError` 吞掉，IP 網址的錯誤代碼變成 `host_not_allowed` | IP 判斷移到 `try` 之外（先用 `try` 判斷是否為 IP，再於外面 raise） |

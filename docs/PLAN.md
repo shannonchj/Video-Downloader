@@ -3,7 +3,7 @@
 > 自架影片下載 → 字幕辨識 → 中文翻譯 → 燒錄輸出 的個人工具
 > 本文件供人類與 AI 協作者共同參考。**AI 協作者修改程式前請先閱讀第 2 節「安全守則」與第 12 節「AI 協作規範」。**
 
-- 文件版本：v0.2（2026-11-22）
+- 文件版本：v0.3（2026-11-22）
 - 主要語言：Python 3.12
 - 目標語種：菲律賓語（Tagalog / Taglish）、英文 → 台灣繁體中文
 
@@ -328,6 +328,7 @@ mediabot/
 ├── src/mediabot/
 │   ├── __init__.py
 │   ├── config.py               # 讀取 .env，以 pydantic-settings 驗證
+│   ├── errors.py               # MediabotError（帶 §8.2 錯誤代碼）
 │   ├── models.py               # Job、StoredFile、JobStatus 等資料模型
 │   ├── security/
 │   │   ├── urls.py             # validate_url()
@@ -335,7 +336,8 @@ mediabot/
 │   │   └── ratelimit.py
 │   ├── downloader/
 │   │   ├── presets.py          # PRESETS 白名單
-│   │   └── runner.py           # 呼叫 yt-dlp Python API
+│   │   ├── runner.py           # 呼叫 yt-dlp Python API
+│   │   └── __main__.py         # CLI：python -m mediabot.downloader
 │   ├── queue/
 │   │   ├── base.py             # JobQueue Protocol
 │   │   ├── sqlite_queue.py     # Phase 1 與 Phase 2（VPS 端）使用
@@ -401,44 +403,17 @@ class Notifier(Protocol):
 
 ### 7.3 網址驗證（S5）
 
-```python
-# security/urls.py
-from urllib.parse import urlparse, parse_qs
-import ipaddress, re
+實作：`src/mediabot/security/urls.py`。`validate_url(raw)` 回傳標準化網址 `https://www.youtube.com/watch?v=<id>`，不合法時丟出 `InvalidURL`（繼承 `MediabotError`，**不繼承 `ValueError`**）。依序檢查，第一個不符合的規則決定錯誤代碼：
 
-ALLOWED_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}
-MAX_URL_LEN = 300
-VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-
-class InvalidURL(ValueError): ...
-
-def validate_url(raw: str) -> str:
-    """回傳標準化網址 https://www.youtube.com/watch?v=<id>；不合法則丟出 InvalidURL。"""
-    raw = raw.strip()
-    if len(raw) > MAX_URL_LEN:
-        raise InvalidURL("too_long")
-    u = urlparse(raw)
-    if u.scheme != "https" or u.username or u.password or u.port:
-        raise InvalidURL("scheme_or_auth")
-    host = (u.hostname or "").lower()
-    try:
-        ipaddress.ip_address(host)
-        raise InvalidURL("ip_host")
-    except ValueError:
-        pass
-    if host not in ALLOWED_HOSTS:
-        raise InvalidURL("host_not_allowed")
-
-    if host == "youtu.be":
-        vid = u.path.lstrip("/").split("/")[0]
-    elif u.path.startswith("/shorts/"):
-        vid = u.path.split("/")[2] if len(u.path.split("/")) > 2 else ""
-    else:
-        vid = parse_qs(u.query).get("v", [""])[0]
-    if not VIDEO_ID_RE.match(vid):
-        raise InvalidURL("bad_video_id")
-    return f"https://www.youtube.com/watch?v={vid}"
-```
+| 順序 | 規則 | 錯誤代碼 |
+|---|---|---|
+| 1 | 長度 > `MAX_URL_LEN`（300） | `url_too_long` |
+| 2 | 含任何空白或控制字元（Unicode 類別 `C*`）；不做 `strip()` | `bad_chars` |
+| 3 | 以 `urlsplit` 解析；scheme 不是 `https`，或有帳號 / 密碼 | `scheme_or_auth` |
+| 4 | 有 port，或 port 不是數字 | `bad_port` |
+| 5 | host 是 IP 位址 | `ip_host` |
+| 6 | host 不在 `ALLOWED_HOSTS`（`www.youtube.com`、`youtube.com`、`m.youtube.com`、`youtu.be`） | `host_not_allowed` |
+| 7 | 取不到 11 碼 video id（`youtu.be/<id>`、`/shorts/<id>`、`?v=<id>`） | `bad_video_id` |
 
 > 擴充其他網站時，必須在 `ALLOWED_HOSTS` 中明確加入該網域，並為它寫對應的標準化函式與測試，不可用萬用字元放寬限制。
 
@@ -461,58 +436,22 @@ PRESETS: dict[str, dict] = {
             "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
         },
     },
-    "video_with_subs": {
-        "label": "影片 + 原生字幕",
-        "opts": {
-            "format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b",
-            "merge_output_format": "mp4",
-            "writesubtitles": True,
-            "subtitleslangs": ["en", "fil", "tl"],
-            "subtitlesformat": "srt/best",
-        },
-    },
 }
 ```
+
+實作：`src/mediabot/downloader/presets.py`（`PRESETS` 唯讀，`Preset.build_opts()` 每次回傳深拷貝）。
+
+> `video_with_subs`（影片 + 原生字幕）暫不提供：字幕會產生額外檔案，而 `files` 表一個 job 只放一筆。等 `files` 的設計確定後（M2 或 Phase 3）再加入。
 
 ### 7.5 下載執行（S4、S8、S12）
 
-```python
-# downloader/runner.py（重點摘要）
-import yt_dlp
+實作：`src/mediabot/downloader/runner.py`。`run(canonical_url, preset, *, settings, progress_cb=None) -> DownloadResult`，失敗時丟出 `DownloadFailed`（帶錯誤代碼）。
 
-BASE_OPTS = {
-    "outtmpl": {"default": "%(id)s.%(ext)s"},
-    "paths": {"home": DOWNLOAD_DIR, "temp": WORK_DIR},
-    "noplaylist": True,
-    "max_filesize": cfg.MAX_FILESIZE_BYTES,
-    "restrictfilenames": True,
-    "windowsfilenames": True,
-    "quiet": True,
-    "no_warnings": True,
-    "noprogress": True,
-    "retries": 3,
-    "sleep_interval_requests": 1,
-    # 嚴禁加入：exec、exec_before_download、cookiesfrombrowser、external_downloader 等
-}
-
-def _match_filter(info, *, incomplete):
-    if info.get("is_live") or info.get("was_live"):
-        return "live_not_supported"
-    dur = info.get("duration") or 0
-    if dur > cfg.MAX_DURATION_SECONDS:
-        return "too_long"
-    return None
-
-def run(job: Job, progress_cb) -> JobResult:
-    opts = {**BASE_OPTS, **PRESETS[job.preset]["opts"],
-            "match_filter": _match_filter,
-            "progress_hooks": [progress_cb]}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(job.canonical_url, download=True)
-        path = ydl.prepare_filename(info)  # 合併或轉檔後副檔名可能改變，需再檢查一次實際檔案
-    return JobResult(...)
-```
-
+- opts = 基本設定 + 方案 opts + `match_filter` + `progress_hooks` + `logger`。基本設定：`outtmpl` 固定為 `%(id)s.%(ext)s`；`paths` 由 `VAULT_DIR` 推導（`downloads/`、`work/`）；`noplaylist`、`max_filesize`、`restrictfilenames`、`windowsfilenames`、`quiet`、`retries=3`、`sleep_interval_requests=1`；`js_runtimes` 指定 uv 鎖定的 deno 執行檔（`deno.find_deno_bin()`）。**不啟用** `remote_components`；嚴禁加入 `scripts/check_forbidden.py` 列出的鍵。
+- `match_filter` 拒絕直播（`live_not_supported`）、超過 `MAX_DURATION_SECONDS`（`too_long`），以及格式選定後預估大小超過 `MAX_FILESIZE_BYTES`（`file_too_large`）。yt-dlp 對被拒絕的影片只會略過、不會丟例外，所以 runner 先記下代碼，`extract_info` 回傳後再丟出 `DownloadFailed`。
+- `DownloadError` 的原始例外是 `ExtractorError(expected=True)` 時為 `unavailable`，其他為 `download_error`。
+- 實際輸出路徑取 `info["requested_downloads"][0]["filepath"]`（不用 `prepare_filename`，轉檔後副檔名會變）；必須是存在的檔案、位於 `downloads/` 內、主檔名等於 video id，否則 `output_missing`。實際大小超過上限時刪除檔案並回報 `file_too_large`（`max_filesize` 只在有 `Content-Length` 時生效）。
+- CLI：`python -m mediabot.downloader URL PRESET`（結束碼 0 成功、1 下載失敗、2 網址或方案不合法）。
 - worker 同時只執行 `MAX_CONCURRENT_JOBS`（預設 1）個任務。
 - 每個任務都在 `asyncio.to_thread` 或獨立的子程序中執行，並設定逾時時間 `JOB_TIMEOUT_SECONDS`。
 
@@ -522,19 +461,20 @@ def run(job: Job, progress_cb) -> JobResult:
 # security/signing.py
 import hmac, hashlib, time, base64
 
+def _compute_sig(file_id: str, exp: int) -> str:
+    msg = f"{file_id}:{exp}".encode()
+    return base64.urlsafe_b64encode(
+        hmac.new(cfg.LINK_SECRET.get_secret_value().encode(), msg, hashlib.sha256).digest()
+    ).decode().rstrip("=")
+
 def sign_link(file_id: str, ttl: int) -> str:
     exp = int(time.time()) + ttl
-    msg = f"{file_id}:{exp}".encode()
-    sig = base64.urlsafe_b64encode(
-        hmac.new(cfg.LINK_SECRET.encode(), msg, hashlib.sha256).digest()
-    ).decode().rstrip("=")
-    return f"{cfg.PUBLIC_BASE_URL}/f/{file_id}?exp={exp}&sig={sig}"
+    return f"{cfg.PUBLIC_BASE_URL}/f/{file_id}?exp={exp}&sig={_compute_sig(file_id, exp)}"
 
 def verify_link(file_id: str, exp: int, sig: str) -> bool:
     if exp < time.time():
         return False
-    expected = sign_link_raw(file_id, exp)   # 與 sign_link 相同的計算方式，只回傳 sig
-    return hmac.compare_digest(expected, sig)
+    return hmac.compare_digest(_compute_sig(file_id, exp), sig)
 ```
 
 fileserver 的規則：
@@ -634,7 +574,14 @@ queued ──claim──▶ running ──complete──▶ done
 queued ──/cancel──▶ cancelled
 ```
 
-不可重試的錯誤代碼：`too_long`、`live_not_supported`、`host_not_allowed`、`file_too_large`、`unavailable`。
+錯誤代碼：
+
+| 代碼 | 來源 | 可重試 |
+|---|---|---|
+| `url_too_long`、`bad_chars`、`scheme_or_auth`、`bad_port`、`ip_host`、`host_not_allowed`、`bad_video_id` | `validate_url`（§7.3） | 否 |
+| `unknown_preset` | `get_preset`（§7.4） | 否 |
+| `live_not_supported`、`too_long`、`file_too_large`、`unavailable` | runner（§7.5） | 否 |
+| `download_error`、`output_missing` | runner（§7.5） | 是 |
 
 ---
 
@@ -900,3 +847,4 @@ worker 每小時執行一次：刪除 `files.expires_at < now` 的檔案和紀�
 |---|---|---|
 | 2026-11-22 | v0.1 | 初版：確定 Phase 1（Mac mini 不休眠）為主要方案，Phase 2（VPS 混合）為進階方案，Phase 3 預留字幕流水線 |
 | 2026-11-22 | v0.2 | 新增 `docs/DEVELOPMENT.md` 開發流程；§13 插入 M0.5；mypy 改為全專案 strict（原 §12-5 為至少 security/、downloader/）；§11.3 的 `rg` 掃描改由 `scripts/check_forbidden.py` 執行；ADR-0001（yt-dlp 經 lockfile 更新，取代 §10.1 的 `pip install -U`）、ADR-0002（SQLite 使用標準庫與 `PRAGMA user_version`） |
+| 2026-11-22 | v0.3 | M1：修正 DEVELOPMENT.md §10 的 P1–P6——§7.3 改為規則表（`InvalidURL` 不繼承 `ValueError`、`bad_port`、`bad_chars`，網址過長改為 `url_too_long`）；§7.4 暫不提供 `video_with_subs`；§7.5 改以 `requested_downloads` 取得實際路徑、`match_filter` 拒絕後由 runner 丟出例外、使用 uv 鎖定的 deno；§7.6 抽出 `_compute_sig`；§8.2 列出全部錯誤代碼 |

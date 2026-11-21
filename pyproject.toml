@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Self-hosted video download and subtitle translation pipeline"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "pydantic-settings>=2.16.3",
+    "yt-dlp[default,deno]>=2026.10.26",
+]
 
 [dependency-groups]
 dev = [
@@ -37,6 +40,11 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 strict = true
 files = ["src", "scripts"]
 python_version = "3.12"
+
+[[tool.mypy.overrides]]
+# yt-dlp and deno ship no type information; runner.py wraps yt-dlp behind a Protocol
+module = ["yt_dlp", "yt_dlp.*", "deno"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
