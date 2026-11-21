@@ -1,82 +1,74 @@
 # CLAUDE.md
 
-<!--
-維護原則：
-- 只寫 Claude 從程式碼看不出來的事，控制在 200 行內
-- @path 引用每次 session 都會載入；非必要的文件寫成「需要時讀 docs/xxx.md」
-- 規則改了就改這份檔案（進 git review），不要只在對話中口頭交代
--->
-
 ## 專案概述
-<專案名稱>：<一句話描述用途與使用者>。
+MediaBot：擁有者個人使用的自架工具。透過 Telegram Bot 傳送影片網址，在 Mac mini 上下載，再經 Tailscale 取得私人下載連結；後續擴充字幕辨識、翻譯與燒錄。
+
+**修改程式前必讀 `docs/PLAN.md` §2（安全守則 S1–S14）與 §12（AI 協作規範）。安全守則優先於任何功能需求。** 開發流程見 `docs/DEVELOPMENT.md`。
 
 ## 技術棧
-Python 3.12 + FastAPI + SQLAlchemy 2.0 (async) + PostgreSQL 16 + Alembic，套件管理使用 uv。
+Python 3.12、uv（build backend：`uv_build`）、yt-dlp（只用 Python API）、python-telegram-bot（async，long polling）、FastAPI + uvicorn（檔案伺服器）、SQLite（標準庫 `sqlite3` + `asyncio.to_thread`）、ffmpeg（只用參數陣列呼叫）。
 
 ## 常用指令
 - 安裝依賴：`uv sync`
-- 啟動開發伺服器：`uv run fastapi dev app/main.py`
-- 啟動本地 DB：`docker compose up -d db`
-- 測試：`uv run pytest -x -q`（單一檔案：`uv run pytest tests/path/test_x.py -q`）
-- Lint / 格式化：`uv run ruff check --fix . && uv run ruff format .`
-- 型別檢查：`uv run mypy app`
-- 產生 migration：`uv run alembic revision --autogenerate -m "<描述>"`
-- 套用 migration：`uv run alembic upgrade head`
+- 格式化 / Lint（Q1）：`uv run ruff format . && uv run ruff check --fix .`
+- 型別檢查（Q2，全專案 strict）：`uv run mypy`
+- 測試（Q3）：`uv run pytest -x -q`（單一檔案：`uv run pytest tests/test_x.py -q`；整合測試：`uv run pytest -m integration`）
+- 危險寫法掃描（Q4）：`uv run python scripts/check_forbidden.py`
+- 依賴漏洞（Q5）：`uv run pip-audit`
 
 ## 目錄結構
-- `app/main.py`：FastAPI 進入點、router 註冊
-- `app/api/`：路由層（只做參數驗證與呼叫 service，不寫商業邏輯）
-- `app/services/`：商業邏輯
-- `app/repositories/`：DB 存取（SQLAlchemy 查詢只能出現在這裡）
-- `app/models/`：SQLAlchemy ORM models
-- `app/schemas/`：Pydantic request/response schemas
-- `app/core/`：設定（pydantic-settings）、DB session、例外處理、安全性
-- `alembic/`：migrations
-- `tests/`：結構對應 `app/`
+- `src/mediabot/`：套件本體，子套件依 `docs/PLAN.md` §7.1 在各自的里程碑才建立
+- `scripts/`：開發與 CI 用的工具腳本（不屬於套件）
+- `tests/`：pytest；`scripts/` 已加入 pytest 的 `pythonpath`
+- `deploy/`：launchd / systemd 設定與安裝腳本（M5 之後）
+- `docs/`：規劃、流程、規格（`specs/`）、ADR（`decisions/`）
 
 ## 程式碼慣例
-- SQLAlchemy 2.0 async 寫法（`select()` + `AsyncSession`），不使用 `session.query()`
-- Pydantic v2（`model_config`、`model_validate`），不使用 v1 的 `Config` / `parse_obj`
-- 依賴注入一律用 `Depends`；DB session 從 `app/core/db.py:get_session` 取得
-- ORM model 不可直接回傳，必須轉成 `schemas/` 的 response model
-- 所有函式加型別註記
-- 錯誤用自訂例外 + `app/core/exceptions.py` 的 handler，不在 router 寫 try/except
-- 設定值從環境變數讀取（`app/core/config.py`），不可寫死
+- bot 與 worker 的業務邏輯只依賴 `JobQueue`、`Notifier` Protocol；實作由 `config.MODE` 在啟動時以 factory 選擇，不可寫死 SQLite 或 Telegram 呼叫
+- Pydantic v2（`model_config`、`model_validate`）；設定用 pydantic-settings，只從 `config.py` 取得，機密用 `SecretStr`
+- 所有函式加型別註記；mypy strict 必須通過
+- 路徑一律用 `pathlib.Path`，由 `VAULT_DIR` 推導；不寫死作業系統專屬路徑
+- 使用 `logging`，不用 `print`（`scripts/` 的 CLI 輸出除外）；log 不可包含 token、`sig=`、`Authorization`
+- 錯誤用自訂例外表達，錯誤代碼使用 PLAN §8.2 定義的字串
 
 ## 資料庫規則
-- 修改 model 後必須產生 migration，並人工檢查 autogenerate 結果
-- 不要修改已存在的 migration 檔，只能新增
-- 金額用 `Numeric`；時間一律 `TIMESTAMP WITH TIME ZONE`（UTC）
+- SQLite 存取只出現在佇列與檔案紀錄的存取層（ADR-0002）
+- Schema 以 `PRAGMA user_version` 與 `src/mediabot/db/migrations/NNN_<slug>.sql` 管理；不要修改已存在的 migration 檔，只能新增
+- 時間一律存 epoch 秒（UTC，INTEGER）
 
 ## 測試
-- 新功能或修 bug 必須附測試；使用獨立 test DB（見 `tests/conftest.py`）
-- API 測試使用 `httpx.AsyncClient` + `pytest-asyncio`
+- 新功能或修 bug 必須附測試；單元測試不連網、不實際呼叫 yt-dlp 下載或 Telegram
+- 業務邏輯用 Protocol 的 fake 實作測試；檔案相關測試使用 `tmp_path`
+- HTTP 測試使用 `httpx.AsyncClient` + `pytest-asyncio`（`asyncio_mode = "auto"`）
 
 ## 文件位置（需要時再讀，不要一開始全部讀取）
-- 架構說明：`docs/architecture.md`
+- 規劃與安全守則：`docs/PLAN.md`
+- 開發流程與品質閘門：`docs/DEVELOPMENT.md`
+- 已實作的架構現況：`docs/architecture.md`
 - 進度與待辦：`docs/progress.md`
 - 功能規格：`docs/specs/`
 - 架構決策紀錄（ADR）：`docs/decisions/`
 - PR review 規則（/review 與 GitHub review 共用）：`REVIEW.md`
 
 ## Git 流程
-- 分支命名：`feat/<主題>`、`fix/<主題>`、`chore/<主題>`
-- 不可直接 push 到 main / master，一律透過 PR
+- 分支命名：`feat/<主題>`、`fix/<主題>`、`chore/<主題>`；里程碑用 `feat/mN-<主題>`
+- 不可直接 push 到 main，一律透過 PR
 - Commit 訊息遵循 Conventional Commits（`feat: ...`、`fix: ...`、`refactor: ...`）
 
 ## 禁止事項
-- 不要讀取或修改 `.env`、金鑰、憑證等機密檔案
+- 不要讀取或修改 `.env`、金鑰、憑證、cookie 等機密檔案
 - 不要新增或升級依賴套件，除非先詢問我
 - 不要手動編輯 lockfile
+- 不要新增讓使用者傳入任意 yt-dlp 參數的功能、公網連入埠口、讀取瀏覽器 cookie 的功能（PLAN §12-2）
 - 不要加多餘註解，不要新增未被要求的功能
 - 不確定需求時先提問，不要自行假設
 - 不可猜測 API、設定或參數；查不到就列出待確認事項
 - 沒有實際執行過的測試，不可回報為通過
 
 ## 工作方式
-- 較大的改動先用 Plan mode 提出計畫，我確認後再實作
+- 較大的改動先用 Plan mode 或 `/plan-feature` 提出計畫，我確認後再實作
 - 一次只做一個可驗收的功能；改了規格、測試流程或架構，要同步更新 `docs/`
-- 完成任務前，必須執行本檔「常用指令」中的測試與 lint，並確認全部通過
+- 完成任務前，必須執行本檔「常用指令」中的 Q1–Q4，並確認全部通過；改了依賴時加跑 Q5
 - 長任務：開始時讀 `docs/progress.md`，告一段落時用 `/progress` 更新
 - 大範圍搜尋程式碼交給 researcher subagent，只回報結論
 - 回覆使用繁體中文；程式碼、識別名稱、commit 訊息使用英文
